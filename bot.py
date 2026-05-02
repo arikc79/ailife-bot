@@ -1,0 +1,360 @@
+import os
+import sys
+import asyncio
+import httpx
+
+sys.stdout.reconfigure(encoding="utf-8")
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
+)
+
+load_dotenv()
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+GROQ_KEY = os.getenv("GROQ_API_KEY")
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+
+SYSTEM_PROMPT = """Ти — контент-менеджер українського Telegram-каналу @ailife_ua про AI та продуктивність.
+
+Твоє завдання: генерувати короткі, живі та корисні пости для підписників.
+
+Правила для кожного посту:
+- Мова: українська
+- Довжина: 150–300 слів
+- Стиль: дружній, живий, без зайвого пафосу
+- Структура: гачок (1–2 речення) → суть → практична порада або приклад → заклик до дії або питання
+- Використовуй 2–4 емодзі органічно
+- Додавай 3–5 хештегів наприкінці: #ailife_ua + тематичні
+- Форматування Telegram: **жирний** для ключових думок
+- Тематика: AI-інструменти, продуктивність, автоматизація, лайфхаки, нейромережі в роботі
+
+Генеруй ТІЛЬКИ текст посту — без пояснень, без "ось пост:", просто сам пост."""
+
+POST_STYLES = {
+    "tip": "практичний лайфхак або порада",
+    "tool": "огляд AI-інструменту",
+    "story": "коротка історія або кейс з реального досвіду",
+    "question": "пост-запитання для залучення аудиторії",
+    "news": "новина зі світу AI + коментар",
+}
+
+
+async def call_groq(prompt: str, status_msg=None, retries: int = 3) -> str:
+    headers = {
+        "Authorization": f"Bearer {GROQ_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": 1024,
+        "temperature": 0.9,
+    }
+    for attempt in range(retries):
+        async with httpx.AsyncClient(timeout=40) as client:
+            response = await client.post(GROQ_URL, headers=headers, json=payload)
+            if response.status_code == 429:
+                wait = 10 * (attempt + 1)
+                if status_msg:
+                    try:
+                        await status_msg.edit_text(f"⏳ Ліміт — чекаю {wait} сек... (спроба {attempt+2}/{retries})")
+                    except Exception:
+                        pass
+                await asyncio.sleep(wait)
+                continue
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+    raise Exception("Groq перевантажений — спробуй за хвилину 🙏")
+
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "👋 Привіт! Я генерую пости для @ailife_ua.\n\n"
+        "Просто напиши тему — і отримаєш готовий пост.\n\n"
+        "Або обери команду:\n"
+        "/generate — генерувати з вибором стилю\n"
+        "/week — 7 тем на тиждень + пости\n"
+        "/help — довідка"
+    )
+    await update.message.reply_text(text)
+
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = (
+        "📋 *Як користуватись:*\n\n"
+        "1️⃣ Просто напиши тему — бот згенерує пост автоматично\n"
+        "   Приклад: `ChatGPT для написання email`\n\n"
+        "2️⃣ /generate — вибрати стиль посту вручну\n"
+        "3️⃣ /week — згенерувати 7 тем на тиждень та пости до них\n\n"
+        "*Стилі постів:*\n"
+        "🔧 Лайфхак — практична порада\n"
+        "🛠 Інструмент — огляд AI-сервісу\n"
+        "📖 Історія — кейс із досвіду\n"
+        "❓ Питання — залучення аудиторії\n"
+        "📰 Новина — AI-новина з коментарем"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    keyboard = [
+        [InlineKeyboardButton("🔧 Лайфхак", callback_data="style:tip"),
+         InlineKeyboardButton("🛠 Інструмент", callback_data="style:tool")],
+        [InlineKeyboardButton("📖 Історія", callback_data="style:story"),
+         InlineKeyboardButton("❓ Питання", callback_data="style:question")],
+        [InlineKeyboardButton("📰 Новина", callback_data="style:news")],
+    ]
+    await update.message.reply_text(
+        "Обери стиль посту:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    style = query.data.split(":")[1]
+    context.user_data["style"] = style
+    style_name = POST_STYLES.get(style, style)
+    await query.edit_message_text(
+        f"Стиль: *{style_name}*\n\nНапиши тему посту:",
+        parse_mode="Markdown"
+    )
+
+
+DAYS_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+
+
+async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    thinking_msg = await update.message.reply_text("⏳ Генерую 7 тем на тиждень...")
+
+    prompt = (
+        "Згенеруй 7 тем для постів у Telegram-каналі про AI та продуктивність — по одній на кожен день тижня.\n"
+        "Теми мають бути різноманітні: лайфхаки, огляди інструментів, мотивація, кейси, новини AI.\n"
+        "Відповідь — рівно 7 рядків, кожен рядок: тільки тема без нумерації та зайвих слів.\n"
+        "Мова: українська."
+    )
+
+    try:
+        raw = await call_groq(prompt, status_msg=thinking_msg)
+        topics = [line.strip("•–- \t") for line in raw.strip().splitlines() if line.strip()][:7]
+
+        context.user_data["week_topics"] = topics
+
+        text = "📅 *Теми на тиждень:*\n\n"
+        for i, topic in enumerate(topics):
+            text += f"{DAYS_UA[i]}: {topic}\n"
+        text += "\nНатисни на день — отримаєш готовий пост 👇"
+
+        keyboard = [
+            [InlineKeyboardButton(f"{DAYS_UA[i]} — {topics[i][:30]}…" if len(topics[i]) > 30 else f"{DAYS_UA[i]} — {topics[i]}", callback_data=f"week:{i}")]
+            for i in range(len(topics))
+        ]
+        keyboard.append([InlineKeyboardButton("🚀 Згенерувати всі 7 постів", callback_data="week:all")])
+
+        await thinking_msg.delete()
+        await update.message.reply_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ Помилка: {e}")
+
+
+async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    topics = context.user_data.get("week_topics", [])
+    if not topics:
+        await query.answer("Спочатку запусти /week", show_alert=True)
+        return
+
+    day_index = query.data.split(":")[1]
+
+    if day_index == "all":
+        await query.edit_message_reply_markup(reply_markup=None)
+        status = await query.message.reply_text("⏳ Генерую всі 7 постів одним запитом...")
+
+        topics_list = "\n".join(f"{DAYS_UA[i]}: {t}" for i, t in enumerate(topics))
+        prompt = (
+            f"Згенеруй 7 окремих постів для Telegram-каналу @ailife_ua.\n"
+            f"Теми по днях:\n{topics_list}\n\n"
+            f"Формат відповіді — рівно 7 блоків, розділених лінією '---':\n"
+            f"[текст посту для Пн]\n---\n[текст посту для Вт]\n--- і так далі.\n"
+            f"Кожен пост: 150-250 слів, українська, з емодзі та хештегами #ailife_ua."
+        )
+
+        try:
+            raw = await call_groq(prompt, status_msg=status)
+            posts = [p.strip() for p in raw.split("---") if p.strip()]
+
+            await status.delete()
+            for i, post_text in enumerate(posts[:7]):
+                day = DAYS_UA[i] if i < len(DAYS_UA) else f"День {i+1}"
+                topic = topics[i] if i < len(topics) else ""
+                await query.message.reply_text(
+                    f"*{day} — {topic}*\n\n{post_text}",
+                    parse_mode="Markdown"
+                )
+            await query.message.reply_text("✅ Всі 7 постів згенеровано!")
+        except Exception as e:
+            await status.edit_text(f"❌ Помилка: {e}")
+        return
+
+    i = int(day_index)
+    topic = topics[i]
+    await query.edit_message_text(f"⏳ Генерую пост для *{DAYS_UA[i]}*...", parse_mode="Markdown")
+
+    try:
+        post_text = await call_groq(f"Тема посту: {topic}.", status_msg=query.message)
+        context.user_data["last_topic"] = topic
+        context.user_data["last_post"] = post_text
+
+        keyboard = [[
+            InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
+            InlineKeyboardButton("📅 Назад до тижня", callback_data="week:back"),
+        ]]
+        await query.edit_message_text(
+            f"*{DAYS_UA[i]} — {topic}*\n\n{post_text}",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Помилка: {e}")
+
+
+async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    topics = context.user_data.get("week_topics", [])
+    if not topics:
+        await query.edit_message_text("Запусти /week щоб отримати нові теми.")
+        return
+
+    text = "📅 *Теми на тиждень:*\n\n"
+    for i, topic in enumerate(topics):
+        text += f"{DAYS_UA[i]}: {topic}\n"
+    text += "\nНатисни на день — отримаєш готовий пост 👇"
+
+    keyboard = [
+        [InlineKeyboardButton(f"{DAYS_UA[i]} — {topics[i][:30]}…" if len(topics[i]) > 30 else f"{DAYS_UA[i]} — {topics[i]}", callback_data=f"week:{i}")]
+        for i in range(len(topics))
+    ]
+    keyboard.append([InlineKeyboardButton("🚀 Згенерувати всі 7 постів", callback_data="week:all")])
+
+    await query.edit_message_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
+
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    topic = update.message.text.strip()
+    style = context.user_data.pop("style", None)
+
+    style_hint = f"\nСтиль посту: {POST_STYLES[style]}." if style else ""
+    prompt = f"Тема посту: {topic}.{style_hint}"
+
+    thinking_msg = await update.message.reply_text("⏳ Генерую пост...")
+
+    try:
+        post_text = await call_groq(prompt, status_msg=thinking_msg)
+        context.user_data["last_topic"] = topic
+        context.user_data["last_post"] = post_text
+
+        keyboard = [[
+            InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
+            InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
+        ]]
+
+        await thinking_msg.delete()
+        await update.message.reply_text(
+            post_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        await thinking_msg.edit_text(f"❌ Помилка: {e}")
+
+
+async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "new":
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text("Напиши нову тему:")
+        return
+
+    topic = context.user_data.get("last_topic", "")
+    previous_post = context.user_data.get("last_post", "")
+
+    if not topic:
+        await query.answer("Тема не знайдена, напиши нову.", show_alert=True)
+        return
+
+    await query.edit_message_text("⏳ Генерую інший варіант...")
+
+    try:
+        prompt = (
+            f"Тема посту: {topic}.\n"
+            f"Попередній варіант:\n{previous_post}\n\n"
+            "Напиши інший варіант посту на ту саму тему — інший стиль, інший гачок."
+        )
+        post_text = await call_groq(prompt)
+        context.user_data["last_post"] = post_text
+
+        keyboard = [[
+            InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
+            InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
+        ]]
+        await query.edit_message_text(
+            post_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
+
+    except Exception as e:
+        await query.edit_message_text(f"❌ Помилка: {e}")
+
+
+def main():
+    if not TELEGRAM_TOKEN:
+        raise ValueError("Не задано TELEGRAM_BOT_TOKEN у .env файлі")
+    if not GROQ_KEY:
+        raise ValueError("Не задано GROQ_API_KEY у .env файлі")
+
+    app = Application.builder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("generate", generate_command))
+    app.add_handler(CommandHandler("week", week_command))
+    app.add_handler(CallbackQueryHandler(style_selected, pattern="^style:"))
+    app.add_handler(CallbackQueryHandler(regen_callback, pattern="^(regen|new)$"))
+    app.add_handler(CallbackQueryHandler(week_back_callback, pattern="^week:back$"))
+    app.add_handler(CallbackQueryHandler(week_post_callback, pattern="^week:"))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✅ Бот запущено! @ai_code_mentor_2026_bot")
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
