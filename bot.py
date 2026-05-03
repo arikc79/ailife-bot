@@ -1,5 +1,6 @@
 import os
 import sys
+import html
 import asyncio
 import httpx
 
@@ -29,10 +30,17 @@ SYSTEM_PROMPT = """Ти — контент-менеджер українсько
 - Структура: гачок (1–2 речення) → суть → практична порада або приклад → заклик до дії або питання
 - Використовуй 2–4 емодзі органічно
 - Додавай 3–5 хештегів наприкінці: #ailife_ua + тематичні
-- Форматування Telegram: **жирний** для ключових думок
+- Форматування Telegram HTML: <b>жирний</b> для ключових думок
 - Тематика: AI-інструменти, продуктивність, автоматизація, лайфхаки, нейромережі в роботі
 
 Генеруй ТІЛЬКИ текст посту — без пояснень, без "ось пост:", просто сам пост."""
+
+def sanitize_post(text: str) -> str:
+    """Escape HTML special chars in LLM output, but keep <b> tags for bold."""
+    escaped = html.escape(text)
+    escaped = escaped.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    return escaped
+
 
 POST_STYLES = {
     "tip": "практичний лайфхак або порада",
@@ -89,19 +97,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "📋 *Як користуватись:*\n\n"
+        "<b>Як користуватись:</b>\n\n"
         "1️⃣ Просто напиши тему — бот згенерує пост автоматично\n"
-        "   Приклад: `ChatGPT для написання email`\n\n"
+        "   Приклад: <code>ChatGPT для написання email</code>\n\n"
         "2️⃣ /generate — вибрати стиль посту вручну\n"
         "3️⃣ /week — згенерувати 7 тем на тиждень та пости до них\n\n"
-        "*Стилі постів:*\n"
+        "<b>Стилі постів:</b>\n"
         "🔧 Лайфхак — практична порада\n"
         "🛠 Інструмент — огляд AI-сервісу\n"
         "📖 Історія — кейс із досвіду\n"
         "❓ Питання — залучення аудиторії\n"
         "📰 Новина — AI-новина з коментарем"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -125,8 +133,8 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["style"] = style
     style_name = POST_STYLES.get(style, style)
     await query.edit_message_text(
-        f"Стиль: *{style_name}*\n\nНапиши тему посту:",
-        parse_mode="Markdown"
+        f"Стиль: <b>{style_name}</b>\n\nНапиши тему посту:",
+        parse_mode="HTML"
     )
 
 
@@ -149,7 +157,7 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["week_topics"] = topics
 
-        text = "📅 *Теми на тиждень:*\n\n"
+        text = "📅 <b>Теми на тиждень:</b>\n\n"
         for i, topic in enumerate(topics):
             text += f"{DAYS_UA[i]}: {topic}\n"
         text += "\nНатисни на день — отримаєш готовий пост 👇"
@@ -164,7 +172,7 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             text,
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -204,8 +212,8 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 day = DAYS_UA[i] if i < len(DAYS_UA) else f"День {i+1}"
                 topic = topics[i] if i < len(topics) else ""
                 await query.message.reply_text(
-                    f"*{day} — {topic}*\n\n{post_text}",
-                    parse_mode="Markdown"
+                    f"<b>{day} — {html.escape(topic)}</b>\n\n{sanitize_post(post_text)}",
+                    parse_mode="HTML"
                 )
             await query.message.reply_text("✅ Всі 7 постів згенеровано!")
         except Exception as e:
@@ -214,7 +222,7 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     i = int(day_index)
     topic = topics[i]
-    await query.edit_message_text(f"⏳ Генерую пост для *{DAYS_UA[i]}*...", parse_mode="Markdown")
+    await query.edit_message_text(f"⏳ Генерую пост для <b>{DAYS_UA[i]}</b>...", parse_mode="HTML")
 
     try:
         post_text = await call_groq(f"Тема посту: {topic}.", status_msg=query.message)
@@ -226,9 +234,9 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             InlineKeyboardButton("📅 Назад до тижня", callback_data="week:back"),
         ]]
         await query.edit_message_text(
-            f"*{DAYS_UA[i]} — {topic}*\n\n{post_text}",
+            f"<b>{DAYS_UA[i]} — {html.escape(topic)}</b>\n\n{sanitize_post(post_text)}",
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -244,7 +252,7 @@ async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text("Запусти /week щоб отримати нові теми.")
         return
 
-    text = "📅 *Теми на тиждень:*\n\n"
+    text = "📅 <b>Теми на тиждень:</b>\n\n"
     for i, topic in enumerate(topics):
         text += f"{DAYS_UA[i]}: {topic}\n"
     text += "\nНатисни на день — отримаєш готовий пост 👇"
@@ -258,7 +266,7 @@ async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(
         text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="Markdown"
+        parse_mode="HTML"
     )
 
 
@@ -283,9 +291,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await thinking_msg.delete()
         await update.message.reply_text(
-            post_text,
+            sanitize_post(post_text),
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -324,9 +332,9 @@ async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
         ]]
         await query.edit_message_text(
-            post_text,
+            sanitize_post(post_text),
             reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="Markdown"
+            parse_mode="HTML"
         )
 
     except Exception as e:
@@ -352,7 +360,6 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     print("✅ Бот запущено! @ai_code_mentor_2026_bot")
-    asyncio.set_event_loop(asyncio.new_event_loop())
     app.run_polling()
 
 
