@@ -2,6 +2,7 @@ import os
 import sys
 import html
 import json
+import random
 import asyncio
 import httpx
 from pathlib import Path
@@ -30,21 +31,10 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = DATA_DIR / "queue.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 
-SYSTEM_PROMPT = """Ти — контент-менеджер українського Telegram-каналу @ailife_ua про AI та продуктивність.
+SYSTEM_PROMPT = """Ти — контент-менеджер Telegram-каналу @ailife_ua про AI та продуктивність. Автор — Тарас.
 
-Твоє завдання: генерувати короткі, живі та корисні пости для підписників.
-
-Правила для кожного посту:
-- Мова: українська
-- Довжина: 150–300 слів
-- Стиль: дружній, живий, без зайвого пафосу
-- Структура: гачок (1–2 речення) → суть → практична порада або приклад → заклик до дії або питання
-- Використовуй 2–4 емодзі органічно
-- Додавай 3–5 хештегів наприкінці: #ailife_ua + тематичні
-- Форматування Telegram HTML: <b>жирний</b> для ключових думок
-- Тематика: AI-інструменти, продуктивність, автоматизація, лайфхаки, нейромережі в роботі
-
-Генеруй ТІЛЬКИ текст посту — без пояснень, без "ось пост:", просто сам пост."""
+Стиль: розмовний, живий, з емодзі, коротко і корисно — як друг розповідає другу, без зайвого пафосу.
+Тематика: ChatGPT, Claude, Gemini, Grok, Midjourney, Perplexity, Make, Zapier, Notion AI та інші AI-інструменти — продуктивність, автоматизація, лайфхаки, реальні кейси."""
 
 POST_STYLES = {
     "tip": "практичний лайфхак або порада",
@@ -54,15 +44,72 @@ POST_STYLES = {
     "news": "новина зі світу AI + коментар",
 }
 
+SUGGESTED_TOPICS = [
+    "Як ChatGPT економить 3 години на день",
+    "Claude vs ChatGPT: що реально краще для роботи",
+    "Google Gemini 2.5: чому це змінює гру",
+    "Grok від xAI: що він вміє і чим відрізняється",
+    "5 AI-інструментів що замінюють цілу команду",
+    "Як писати промпти які реально працюють",
+    "AI для заробітку: реальні кейси з України",
+    "Автоматизація рутини через Make + AI",
+    "Perplexity AI: кращий пошук замість Google?",
+    "Midjourney vs Ideogram: який обрати для контенту",
+    "Notion AI: чи варто платити за підписку",
+    "Як Claude допомагає писати код без досвіду",
+    "Gemini у Google Docs: AI прямо в твоїх документах",
+    "Як AI змінює ринок праці — що робити зараз",
+    "Grok 3 vs GPT-4o: чесне порівняння",
+]
+
+DAYS_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def sanitize_post(text: str) -> str:
-    """Escape HTML special chars in LLM output, but keep <b> tags for bold."""
     escaped = html.escape(text)
     escaped = escaped.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
     return escaped
 
 
-# ── History (avoid topic repeats) ────────────────────────────────────────────
+def build_post_prompt(topic: str, style: str = None, previous: str = None) -> str:
+    style_hint = f"\nСтиль: {POST_STYLES[style]}." if style else ""
+    regen_hint = (
+        f"\nПопередній варіант (напиши ІНШИЙ — інший гачок, інший підхід):\n{previous}"
+        if previous else ""
+    )
+    return (
+        f"Тема посту: {topic}.{style_hint}{regen_hint}\n\n"
+        "Правила:\n"
+        "- Довжина: 200–300 слів\n"
+        "- Структура: чіпляючий гачок → суть → практична порада → заклик або питання\n"
+        "- 3–5 емодзі органічно\n"
+        "- 3–5 хештегів наприкінці: #ailife_ua + тематичні\n"
+        "- <b>жирний</b> для заголовка і ключових думок\n\n"
+        "Відповідай ТІЛЬКИ валідним JSON без markdown та пояснень:\n"
+        '{"title":"чіпляючий заголовок","text":"повний текст посту з емодзі та хештегами",'
+        '"image_prompt":"hyperrealistic candid photo of a young ukrainian man in his late 20s, natural window light, Sony A7, shallow depth of field, 4k — add specific visual detail for this topic"}'
+    )
+
+
+def parse_post_json(raw: str) -> dict:
+    clean = raw.strip().replace("```json", "").replace("```", "").strip()
+    try:
+        return json.loads(clean)
+    except Exception:
+        return {"title": "", "text": raw, "image_prompt": ""}
+
+
+def format_channel_post(title: str, text: str) -> str:
+    parts = []
+    if title:
+        parts.append(f"<b>{html.escape(title)}</b>")
+    parts.append(sanitize_post(text))
+    return "\n\n".join(parts)
+
+
+# ── History ───────────────────────────────────────────────────────────────────
 
 def load_history() -> list:
     if HISTORY_FILE.exists():
@@ -81,7 +128,7 @@ def save_history(new_topics: list):
     )
 
 
-# ── Queue (scheduled posts) ───────────────────────────────────────────────────
+# ── Queue ─────────────────────────────────────────────────────────────────────
 
 def load_queue() -> list:
     if QUEUE_FILE.exists():
@@ -147,9 +194,10 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
     for item in queue:
         if item["date"] == today and not item["posted"]:
             try:
+                post_text = format_channel_post(item.get("title", ""), item["text"])
                 await context.bot.send_message(
                     chat_id=CHANNEL_ID,
-                    text=sanitize_post(item["text"]),
+                    text=post_text,
                     parse_mode="HTML"
                 )
                 item["posted"] = True
@@ -168,10 +216,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 Привіт! Я генерую пости для @ailife_ua.\n\n"
         "Просто напиши тему — і отримаєш готовий пост.\n\n"
-        "Або обери команду:\n"
-        "/generate — генерувати з вибором стилю\n"
+        "Команди:\n"
+        "/generate — обрати стиль + підказки тем\n"
         "/week — 7 тем на тиждень + пости\n"
-        "/queue — переглянути заплановані пости\n"
+        "/queue — заплановані пости\n"
         "/help — довідка"
     )
     await update.message.reply_text(text)
@@ -180,17 +228,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "<b>Як користуватись:</b>\n\n"
-        "1️⃣ Просто напиши тему — бот згенерує пост автоматично\n"
-        "   Приклад: <code>ChatGPT для написання email</code>\n\n"
-        "2️⃣ /generate — вибрати стиль посту вручну\n"
-        "3️⃣ /week — згенерувати 7 тем і пости, потім запланувати\n"
+        "1️⃣ Просто напиши тему — бот згенерує пост\n"
+        "   Приклад: <code>Claude vs ChatGPT для роботи</code>\n\n"
+        "2️⃣ /generate — вибрати стиль посту + підказки тем\n"
+        "3️⃣ /week — 7 різних тем і постів, потім запланувати\n"
         "4️⃣ /queue — переглянути чергу автопублікацій\n\n"
         "<b>Стилі постів:</b>\n"
         "🔧 Лайфхак — практична порада\n"
         "🛠 Інструмент — огляд AI-сервісу\n"
         "📖 Історія — кейс із досвіду\n"
         "❓ Питання — залучення аудиторії\n"
-        "📰 Новина — AI-новина з коментарем"
+        "📰 Новина — AI-новина з коментарем\n\n"
+        "<b>Після генерації:</b>\n"
+        "Отримаєш пост + 🎨 промпт для картинки"
     )
     await update.message.reply_text(text, parse_mode="HTML")
 
@@ -211,17 +261,20 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
+    sample = random.sample(SUGGESTED_TOPICS, 4)
+    style_keyboard = [
         [InlineKeyboardButton("🔧 Лайфхак", callback_data="style:tip"),
          InlineKeyboardButton("🛠 Інструмент", callback_data="style:tool")],
         [InlineKeyboardButton("📖 Історія", callback_data="style:story"),
          InlineKeyboardButton("❓ Питання", callback_data="style:question")],
         [InlineKeyboardButton("📰 Новина", callback_data="style:news")],
     ]
-    await update.message.reply_text(
-        "Обери стиль посту:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    ideas = "\n".join(f"• {t}" for t in sample)
+    text = (
+        "Обери стиль або просто напиши тему нижче.\n\n"
+        f"<b>💡 Ідеї для теми:</b>\n{ideas}"
     )
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(style_keyboard), parse_mode="HTML")
 
 
 async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -236,21 +289,19 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-DAYS_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
-
-
 async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thinking_msg = await update.message.reply_text("⏳ Генерую 7 тем на тиждень...")
 
     history = load_history()
     history_hint = ""
     if history:
-        history_hint = "\nВже використані теми (НЕ повторюй їх):\n" + "\n".join(f"- {t}" for t in history[-20:])
+        history_hint = "\nВже використані теми (НЕ повторюй):\n" + "\n".join(f"- {t}" for t in history[-20:])
 
     prompt = (
-        "Згенеруй 7 тем для постів у Telegram-каналі про AI та продуктивність — по одній на кожен день тижня.\n"
-        "Теми мають бути різноманітні: лайфхаки, огляди інструментів, мотивація, кейси, новини AI.\n"
-        "Відповідь — рівно 7 рядків, кожен рядок: тільки тема без нумерації та зайвих слів.\n"
+        "Згенеруй 7 різних тем для Telegram-постів каналу @ailife_ua про AI та продуктивність — по одній на кожен день тижня.\n"
+        "Обов'язково використовуй РІЗНІ інструменти: ChatGPT, Claude, Gemini, Grok, Midjourney, Perplexity, Make/Zapier, Notion AI — не повторюй один і той самий.\n"
+        "Типи: лайфхак, огляд інструменту, порівняння AI, кейс з досвіду, новина, питання для аудиторії.\n"
+        "Відповідь — рівно 7 рядків, кожен: тільки тема без нумерації та зайвих слів.\n"
         f"Мова: українська.{history_hint}"
     )
 
@@ -299,15 +350,18 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     if day_index == "all":
         await query.edit_message_reply_markup(reply_markup=None)
-        status = await query.message.reply_text("⏳ Генерую всі 7 постів одним запитом...")
+        status = await query.message.reply_text("⏳ Генерую всі 7 постів...")
 
         topics_list = "\n".join(f"{DAYS_UA[i]}: {t}" for i, t in enumerate(topics))
         prompt = (
             f"Згенеруй 7 окремих постів для Telegram-каналу @ailife_ua.\n"
             f"Теми по днях:\n{topics_list}\n\n"
-            f"Формат відповіді — рівно 7 блоків, розділених лінією '---':\n"
-            f"[текст посту для Пн]\n---\n[текст посту для Вт]\n--- і так далі.\n"
-            f"Кожен пост: 150-250 слів, українська, з емодзі та хештегами #ailife_ua."
+            f"Правила:\n"
+            f"- Кожен пост: 200-250 слів, розмовний стиль, як друг розповідає другу\n"
+            f"- 3-5 емодзі органічно, хештеги #ailife_ua наприкінці\n"
+            f"- <b>жирний</b> для заголовка і ключових думок\n"
+            f"- Формат відповіді — рівно 7 блоків, розділених лінією '---'\n"
+            f"Мова: українська."
         )
 
         try:
@@ -320,7 +374,7 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for i, post_text in enumerate(posts[:7]):
                 day = DAYS_UA[i] if i < len(DAYS_UA) else f"День {i+1}"
                 topic = topics[i] if i < len(topics) else ""
-                week_posts.append({"topic": topic, "text": post_text})
+                week_posts.append({"topic": topic, "title": "", "text": post_text})
                 await query.message.reply_text(
                     f"<b>{day} — {html.escape(topic)}</b>\n\n{sanitize_post(post_text)}",
                     parse_mode="HTML"
@@ -343,19 +397,30 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(f"⏳ Генерую пост для <b>{DAYS_UA[i]}</b>...", parse_mode="HTML")
 
     try:
-        post_text = await call_groq(f"Тема посту: {topic}.", status_msg=query.message)
+        prompt = build_post_prompt(topic)
+        raw = await call_groq(prompt, status_msg=query.message)
+        post = parse_post_json(raw)
+
+        post_text = post.get("text", raw)
+        post_title = post.get("title", "")
+        image_prompt = post.get("image_prompt", "")
+
         context.user_data["last_topic"] = topic
         context.user_data["last_post"] = post_text
+        context.user_data["last_title"] = post_title
 
+        post_msg = format_channel_post(post_title, post_text)
         keyboard = [[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("📅 Назад до тижня", callback_data="week:back"),
         ]]
-        await query.edit_message_text(
-            f"<b>{DAYS_UA[i]} — {html.escape(topic)}</b>\n\n{sanitize_post(post_text)}",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+        if image_prompt:
+            await query.message.reply_text(
+                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
+                parse_mode="HTML"
+            )
 
     except Exception as e:
         await query.edit_message_text(f"❌ Помилка: {e}")
@@ -377,6 +442,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         queue_items.append({
             "date": post_date.strftime("%Y-%m-%d"),
             "topic": post["topic"],
+            "title": post.get("title", ""),
             "text": post["text"],
             "posted": False,
         })
@@ -413,38 +479,39 @@ async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     keyboard.append([InlineKeyboardButton("🚀 Згенерувати всі 7 постів", callback_data="week:all")])
 
-    await query.edit_message_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode="HTML"
-    )
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     topic = update.message.text.strip()
     style = context.user_data.pop("style", None)
-
-    style_hint = f"\nСтиль посту: {POST_STYLES[style]}." if style else ""
-    prompt = f"Тема посту: {topic}.{style_hint}"
+    prompt = build_post_prompt(topic, style=style)
 
     thinking_msg = await update.message.reply_text("⏳ Генерую пост...")
 
     try:
-        post_text = await call_groq(prompt, status_msg=thinking_msg)
-        context.user_data["last_topic"] = topic
-        context.user_data["last_post"] = post_text
+        raw = await call_groq(prompt, status_msg=thinking_msg)
+        post = parse_post_json(raw)
 
+        context.user_data["last_topic"] = topic
+        context.user_data["last_post"] = post.get("text", raw)
+        context.user_data["last_title"] = post.get("title", "")
+
+        post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
         keyboard = [[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
         ]]
 
         await thinking_msg.delete()
-        await update.message.reply_text(
-            sanitize_post(post_text),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        await update.message.reply_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+        image_prompt = post.get("image_prompt", "")
+        if image_prompt:
+            await update.message.reply_text(
+                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
+                parse_mode="HTML"
+            )
 
     except Exception as e:
         await thinking_msg.edit_text(f"❌ Помилка: {e}")
@@ -469,23 +536,25 @@ async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("⏳ Генерую інший варіант...")
 
     try:
-        prompt = (
-            f"Тема посту: {topic}.\n"
-            f"Попередній варіант:\n{previous_post}\n\n"
-            "Напиши інший варіант посту на ту саму тему — інший стиль, інший гачок."
-        )
-        post_text = await call_groq(prompt)
-        context.user_data["last_post"] = post_text
+        prompt = build_post_prompt(topic, previous=previous_post)
+        raw = await call_groq(prompt)
+        post = parse_post_json(raw)
+        context.user_data["last_post"] = post.get("text", raw)
+        context.user_data["last_title"] = post.get("title", "")
 
+        post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
         keyboard = [[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
         ]]
-        await query.edit_message_text(
-            sanitize_post(post_text),
-            reply_markup=InlineKeyboardMarkup(keyboard),
-            parse_mode="HTML"
-        )
+        await query.edit_message_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+        image_prompt = post.get("image_prompt", "")
+        if image_prompt:
+            await query.message.reply_text(
+                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
+                parse_mode="HTML"
+            )
 
     except Exception as e:
         await query.edit_message_text(f"❌ Помилка: {e}")
@@ -521,4 +590,6 @@ def main():
 
 
 if __name__ == "__main__":
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     main()
