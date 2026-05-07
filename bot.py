@@ -214,7 +214,7 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👋 Привіт! Я генерую пости для @ailife_ua.\n\n"
+        "👋 Привіт! Я — <b>Мозок 2.0</b>, генерую пости для @ailife_ua.\n\n"
         "Просто напиши тему — і отримаєш готовий пост.\n\n"
         "Команди:\n"
         "/generate — обрати стиль + підказки тем\n"
@@ -585,7 +585,7 @@ def main():
         time=dtime(8, 0, 0, tzinfo=KYIV_TZ)
     )
 
-    print("✅ Бот запущено! Автопублікація о 8:00 за Києвом.")
+    print("✅ Мозок 2.0 запущено! Автопублікація о 8:00 за Києвом.")
     app.run_polling()
 
 
