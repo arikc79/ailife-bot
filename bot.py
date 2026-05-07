@@ -22,6 +22,7 @@ load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 GROQ_KEY = os.getenv("GROQ_API_KEY")
+XAI_KEY = os.getenv("XAI_API_KEY")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "@ailife_ua")
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -186,9 +187,25 @@ async def call_groq(prompt: str, status_msg=None, retries: int = 3) -> str:
     raise Exception("Groq перевантажений — спробуй за хвилину 🙏")
 
 
-# ── Image generation (Pollinations.ai) ───────────────────────────────────────
+# ── Image generation ──────────────────────────────────────────────────────────
 
-async def generate_image(prompt: str) -> bytes | None:
+async def generate_image_grok(prompt: str) -> bytes | None:
+    try:
+        headers = {"Authorization": f"Bearer {XAI_KEY}", "Content-Type": "application/json"}
+        payload = {"model": "grok-2-image-1212", "prompt": prompt, "n": 1, "response_format": "url"}
+        async with httpx.AsyncClient(timeout=60) as client:
+            r = await client.post("https://api.x.ai/v1/images/generations", headers=headers, json=payload)
+            r.raise_for_status()
+            img_url = r.json()["data"][0]["url"]
+            img = await client.get(img_url)
+            if "image" in img.headers.get("content-type", ""):
+                return img.content
+    except Exception as e:
+        print(f"⚠️ Grok image error: {e}")
+    return None
+
+
+async def generate_image_pollinations(prompt: str) -> bytes | None:
     try:
         encoded = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
@@ -197,8 +214,17 @@ async def generate_image(prompt: str) -> bytes | None:
             if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
                 return r.content
     except Exception as e:
-        print(f"⚠️ Помилка генерації зображення: {e}")
+        print(f"⚠️ Pollinations error: {e}")
     return None
+
+
+async def generate_image(prompt: str) -> bytes | None:
+    if XAI_KEY:
+        img = await generate_image_grok(prompt)
+        if img:
+            return img
+        print("⚠️ Grok не відповів — fallback на Pollinations")
+    return await generate_image_pollinations(prompt)
 
 
 async def send_post_with_image(send_fn, post_msg: str, image_bytes: bytes | None, keyboard=None):
