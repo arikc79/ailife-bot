@@ -5,6 +5,7 @@ import json
 import random
 import asyncio
 import httpx
+import urllib.parse
 from pathlib import Path
 from datetime import datetime, timedelta, time as dtime
 from zoneinfo import ZoneInfo
@@ -185,6 +186,33 @@ async def call_groq(prompt: str, status_msg=None, retries: int = 3) -> str:
     raise Exception("Groq перевантажений — спробуй за хвилину 🙏")
 
 
+# ── Image generation (Pollinations.ai) ───────────────────────────────────────
+
+async def generate_image(prompt: str) -> bytes | None:
+    try:
+        encoded = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            r = await client.get(url)
+            if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
+                return r.content
+    except Exception as e:
+        print(f"⚠️ Помилка генерації зображення: {e}")
+    return None
+
+
+async def send_post_with_image(send_fn, post_msg: str, image_bytes: bytes | None, keyboard=None):
+    """Надсилає пост: якщо є зображення — фото+підпис, інакше — текст."""
+    if image_bytes:
+        if len(post_msg) <= 1024:
+            await send_fn("photo", photo=image_bytes, caption=post_msg, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await send_fn("photo", photo=image_bytes)
+            await send_fn("text", text=post_msg, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await send_fn("text", text=post_msg, parse_mode="HTML", reply_markup=keyboard)
+
+
 # ── Daily posting job ─────────────────────────────────────────────────────────
 
 async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
@@ -195,11 +223,25 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
         if item["date"] == today and not item["posted"]:
             try:
                 post_text = format_channel_post(item.get("title", ""), item["text"])
-                await context.bot.send_message(
-                    chat_id=CHANNEL_ID,
-                    text=post_text,
-                    parse_mode="HTML"
-                )
+                image_prompt = item.get("image_prompt", "")
+                image_bytes = await generate_image(image_prompt) if image_prompt else None
+
+                if image_bytes:
+                    if len(post_text) <= 1024:
+                        await context.bot.send_photo(
+                            chat_id=CHANNEL_ID, photo=image_bytes,
+                            caption=post_text, parse_mode="HTML"
+                        )
+                    else:
+                        await context.bot.send_photo(chat_id=CHANNEL_ID, photo=image_bytes)
+                        await context.bot.send_message(
+                            chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML"
+                        )
+                else:
+                    await context.bot.send_message(
+                        chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML"
+                    )
+
                 item["posted"] = True
                 changed = True
                 print(f"✅ Опубліковано пост за {today}: {item.get('topic', '')[:40]}")
@@ -374,7 +416,11 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             for i, post_text in enumerate(posts[:7]):
                 day = DAYS_UA[i] if i < len(DAYS_UA) else f"День {i+1}"
                 topic = topics[i] if i < len(topics) else ""
-                week_posts.append({"topic": topic, "title": "", "text": post_text})
+                fallback_img = (
+                    f"hyperrealistic candid photo young ukrainian man, laptop, AI technology, "
+                    f"{topic[:60]}, natural window light, Sony A7, shallow depth of field, 4k"
+                )
+                week_posts.append({"topic": topic, "title": "", "text": post_text, "image_prompt": fallback_img})
                 await query.message.reply_text(
                     f"<b>{day} — {html.escape(topic)}</b>\n\n{sanitize_post(post_text)}",
                     parse_mode="HTML"
@@ -410,17 +456,23 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context.user_data["last_title"] = post_title
 
         post_msg = format_channel_post(post_title, post_text)
-        keyboard = [[
+        keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("📅 Назад до тижня", callback_data="week:back"),
-        ]]
-        await query.edit_message_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        ]])
 
-        if image_prompt:
-            await query.message.reply_text(
-                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
-                parse_mode="HTML"
-            )
+        await query.edit_message_text("🎨 Генерую зображення...")
+        image_bytes = await generate_image(image_prompt) if image_prompt else None
+
+        if image_bytes:
+            await query.message.delete()
+            if len(post_msg) <= 1024:
+                await query.message.reply_photo(photo=image_bytes, caption=post_msg, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await query.message.reply_photo(photo=image_bytes)
+                await query.message.reply_text(post_msg, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await query.edit_message_text(post_msg, reply_markup=keyboard, parse_mode="HTML")
 
     except Exception as e:
         await query.edit_message_text(f"❌ Помилка: {e}")
@@ -444,6 +496,7 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "topic": post["topic"],
             "title": post.get("title", ""),
             "text": post["text"],
+            "image_prompt": post.get("image_prompt", ""),
             "posted": False,
         })
 
@@ -498,20 +551,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["last_title"] = post.get("title", "")
 
         post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
-        keyboard = [[
+        image_prompt = post.get("image_prompt", "")
+        keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
-        ]]
+        ]])
 
+        await thinking_msg.edit_text("🎨 Генерую зображення...")
+        image_bytes = await generate_image(image_prompt) if image_prompt else None
         await thinking_msg.delete()
-        await update.message.reply_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
 
-        image_prompt = post.get("image_prompt", "")
-        if image_prompt:
-            await update.message.reply_text(
-                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
-                parse_mode="HTML"
-            )
+        if image_bytes:
+            if len(post_msg) <= 1024:
+                await update.message.reply_photo(photo=image_bytes, caption=post_msg, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await update.message.reply_photo(photo=image_bytes)
+                await update.message.reply_text(post_msg, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await update.message.reply_text(post_msg, parse_mode="HTML", reply_markup=keyboard)
 
     except Exception as e:
         await thinking_msg.edit_text(f"❌ Помилка: {e}")
@@ -543,18 +600,24 @@ async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["last_title"] = post.get("title", "")
 
         post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
-        keyboard = [[
+        image_prompt = post.get("image_prompt", "")
+        keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
             InlineKeyboardButton("✏️ Новий пост", callback_data="new"),
-        ]]
-        await query.edit_message_text(post_msg, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+        ]])
 
-        image_prompt = post.get("image_prompt", "")
-        if image_prompt:
-            await query.message.reply_text(
-                f"🎨 <b>Промпт для картинки:</b>\n<code>{html.escape(image_prompt)}</code>",
-                parse_mode="HTML"
-            )
+        await query.edit_message_text("🎨 Генерую зображення...")
+        image_bytes = await generate_image(image_prompt) if image_prompt else None
+
+        if image_bytes:
+            await query.message.delete()
+            if len(post_msg) <= 1024:
+                await query.message.reply_photo(photo=image_bytes, caption=post_msg, parse_mode="HTML", reply_markup=keyboard)
+            else:
+                await query.message.reply_photo(photo=image_bytes)
+                await query.message.reply_text(post_msg, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await query.edit_message_text(post_msg, reply_markup=keyboard, parse_mode="HTML")
 
     except Exception as e:
         await query.edit_message_text(f"❌ Помилка: {e}")
