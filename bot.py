@@ -91,7 +91,7 @@ def build_post_prompt(topic: str, style: str = None, previous: str = None) -> st
         "- <b>жирний</b> для заголовка і ключових думок\n\n"
         "Відповідай ТІЛЬКИ валідним JSON без markdown та пояснень:\n"
         '{"title":"чіпляючий заголовок","text":"повний текст посту з емодзі та хештегами",'
-        '"image_prompt":"hyperrealistic candid photo of a young ukrainian man in his late 20s, natural window light, Sony A7, shallow depth of field, 4k — add specific visual detail for this topic"}'
+        '"image_prompt":"minimalist dark tech illustration, glowing neon UI elements, flat design, no people, cinematic lighting — add specific visual detail relevant to this topic, high quality digital art"}'
     )
 
 
@@ -209,7 +209,7 @@ async def generate_image_pollinations(prompt: str, retries: int = 2) -> bytes | 
     encoded = urllib.parse.quote(prompt)
     for attempt in range(retries):
         try:
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
+            url = f"https://image.pollinations.ai/prompt/{encoded}?model=flux&width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
             async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
                 r = await client.get(url)
                 if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
@@ -258,8 +258,8 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
                 if not image_prompt:
                     topic = item.get("topic", "AI productivity")
                     image_prompt = (
-                        f"hyperrealistic candid photo young ukrainian man, laptop, AI technology, "
-                        f"{topic[:60]}, natural window light, Sony A7, shallow depth of field, 4k"
+                        f"minimalist dark tech illustration, glowing neon UI elements, flat design, no people, "
+                        f"{topic[:60]}, cinematic lighting, high quality digital art"
                     )
                     print(f"⚠️ image_prompt порожній у черзі, використовую fallback для: {topic[:40]}")
 
@@ -331,7 +331,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def testpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🧪 Тестую генерацію зображення...")
-    test_prompt = "hyperrealistic candid photo young ukrainian man, laptop, AI technology, natural window light, Sony A7, 4k"
+    test_prompt = "minimalist dark tech illustration, glowing neon UI elements, flat design, no people, AI technology, cinematic lighting, high quality digital art"
     image_bytes = await generate_image(test_prompt)
     if image_bytes:
         await update.message.reply_photo(photo=image_bytes, caption="✅ Зображення працює! Автопублікація повинна теж генерувати картинки.")
@@ -469,8 +469,8 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 day = DAYS_UA[i] if i < len(DAYS_UA) else f"День {i+1}"
                 topic = topics[i] if i < len(topics) else ""
                 fallback_img = (
-                    f"hyperrealistic candid photo young ukrainian man, laptop, AI technology, "
-                    f"{topic[:60]}, natural window light, Sony A7, shallow depth of field, 4k"
+                    f"minimalist dark tech illustration, glowing neon UI elements, flat design, no people, "
+                    f"{topic[:60]}, cinematic lighting, high quality digital art"
                 )
                 week_posts.append({"topic": topic, "title": "", "text": post_text, "image_prompt": fallback_img})
                 await query.message.reply_text(
