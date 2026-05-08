@@ -205,16 +205,20 @@ async def generate_image_grok(prompt: str) -> bytes | None:
     return None
 
 
-async def generate_image_pollinations(prompt: str) -> bytes | None:
-    try:
-        encoded = urllib.parse.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
-        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-            r = await client.get(url)
-            if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
-                return r.content
-    except Exception as e:
-        print(f"⚠️ Pollinations error: {e}")
+async def generate_image_pollinations(prompt: str, retries: int = 2) -> bytes | None:
+    encoded = urllib.parse.quote(prompt)
+    for attempt in range(retries):
+        try:
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1024&height=1024&nologo=true&seed={random.randint(1, 99999)}"
+            async with httpx.AsyncClient(timeout=90, follow_redirects=True) as client:
+                r = await client.get(url)
+                if r.status_code == 200 and "image" in r.headers.get("content-type", ""):
+                    return r.content
+                print(f"⚠️ Pollinations attempt {attempt+1}: status={r.status_code}, content-type={r.headers.get('content-type','?')}")
+        except Exception as e:
+            print(f"⚠️ Pollinations attempt {attempt+1} error: {e}")
+        if attempt < retries - 1:
+            await asyncio.sleep(5)
     return None
 
 
@@ -250,7 +254,18 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
             try:
                 post_text = format_channel_post(item.get("title", ""), item["text"])
                 image_prompt = item.get("image_prompt", "")
-                image_bytes = await generate_image(image_prompt) if image_prompt else None
+
+                if not image_prompt:
+                    topic = item.get("topic", "AI productivity")
+                    image_prompt = (
+                        f"hyperrealistic candid photo young ukrainian man, laptop, AI technology, "
+                        f"{topic[:60]}, natural window light, Sony A7, shallow depth of field, 4k"
+                    )
+                    print(f"⚠️ image_prompt порожній у черзі, використовую fallback для: {topic[:40]}")
+
+                print(f"🎨 Генерую зображення для: {item.get('topic', '')[:40]}")
+                image_bytes = await generate_image(image_prompt)
+                print(f"{'✅ Зображення отримано' if image_bytes else '❌ Зображення не вдалось — публікую без картинки'}")
 
                 if image_bytes:
                     if len(post_text) <= 1024:
@@ -280,37 +295,48 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
 
 # ── Handlers ──────────────────────────────────────────────────────────────────
 
+COMMANDS_TEXT = (
+    "<b>📋 Команди бота:</b>\n\n"
+    "/generate — обрати стиль і отримати пост з підказками тем\n"
+    "/week — згенерувати 7 тем на тиждень і запланувати автопублікацію\n"
+    "/queue — переглянути заплановані пости\n"
+    "/testpost — перевірити чи генерується зображення (дебаг)\n"
+    "/help — ця довідка\n\n"
+    "💬 <b>Або просто напиши тему</b> — і отримаєш готовий пост із зображенням.\n"
+    "Приклад: <code>5 AI-інструментів для продуктивності</code>"
+)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "👋 Привіт! Я генерую пости для @ailife_ua.\n\n"
-        "Просто напиши тему — і отримаєш готовий пост.\n\n"
-        "Команди:\n"
-        "/generate — обрати стиль + підказки тем\n"
-        "/week — 7 тем на тиждень + пости\n"
-        "/queue — заплановані пости\n"
-        "/help — довідка"
+        "👋 Привіт! Я генерую пости для @ailife_ua — з текстом і зображенням.\n\n"
+        + COMMANDS_TEXT
     )
-    await update.message.reply_text(text)
+    await update.message.reply_text(text, parse_mode="HTML")
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
-        "<b>Як користуватись:</b>\n\n"
-        "1️⃣ Просто напиши тему — бот згенерує пост\n"
-        "   Приклад: <code>Claude vs ChatGPT для роботи</code>\n\n"
-        "2️⃣ /generate — вибрати стиль посту + підказки тем\n"
-        "3️⃣ /week — 7 різних тем і постів, потім запланувати\n"
-        "4️⃣ /queue — переглянути чергу автопублікацій\n\n"
-        "<b>Стилі постів:</b>\n"
+        COMMANDS_TEXT
+        + "\n\n<b>Стилі постів</b> (обираєш у /generate):\n"
         "🔧 Лайфхак — практична порада\n"
         "🛠 Інструмент — огляд AI-сервісу\n"
         "📖 Історія — кейс із досвіду\n"
         "❓ Питання — залучення аудиторії\n"
         "📰 Новина — AI-новина з коментарем\n\n"
-        "<b>Після генерації:</b>\n"
-        "Отримаєш пост + 🎨 промпт для картинки"
+        "<b>Автопублікація:</b> щодня о 8:00 за Києвом — якщо є пости в черзі (/week → Запланувати)."
     )
     await update.message.reply_text(text, parse_mode="HTML")
+
+
+async def testpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🧪 Тестую генерацію зображення...")
+    test_prompt = "hyperrealistic candid photo young ukrainian man, laptop, AI technology, natural window light, Sony A7, 4k"
+    image_bytes = await generate_image(test_prompt)
+    if image_bytes:
+        await update.message.reply_photo(photo=image_bytes, caption="✅ Зображення працює! Автопублікація повинна теж генерувати картинки.")
+    else:
+        await update.message.reply_text("❌ Зображення не вдалось — перевір логи Railway (Grok + Pollinations обидва не відповіли).")
 
 
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -655,13 +681,23 @@ def main():
     if not GROQ_KEY:
         raise ValueError("Не задано GROQ_API_KEY у .env файлі")
 
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
+    async def post_init(application):
+        await application.bot.set_my_commands([
+            ("generate", "Обрати стиль і згенерувати пост"),
+            ("week", "7 тем на тиждень + автопублікація"),
+            ("queue", "Переглянути заплановані пости"),
+            ("testpost", "Перевірити генерацію зображення"),
+            ("help", "Довідка по командах"),
+        ])
+
+    app = Application.builder().token(TELEGRAM_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(CommandHandler("generate", generate_command))
     app.add_handler(CommandHandler("week", week_command))
     app.add_handler(CommandHandler("queue", queue_command))
+    app.add_handler(CommandHandler("testpost", testpost_command))
     app.add_handler(CallbackQueryHandler(style_selected, pattern="^style:"))
     app.add_handler(CallbackQueryHandler(regen_callback, pattern="^(regen|new)$"))
     app.add_handler(CallbackQueryHandler(schedule_callback, pattern="^schedule:"))
