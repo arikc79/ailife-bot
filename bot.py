@@ -33,8 +33,9 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 QUEUE_FILE = DATA_DIR / "queue.json"
 HISTORY_FILE = DATA_DIR / "history.json"
 
-SYSTEM_PROMPT = """Ти — контент-менеджер Telegram-каналу @ailife_ua про AI та продуктивність. Автор — Тарас.
+SYSTEM_PROMPT = """Ти пишеш пости для Telegram-каналу @ailife_ua від імені Тараса — автора каналу про AI та продуктивність.
 
+Пости завжди від першої особи однини: "я", "мій", "я спробував", "я помітив" — НІКОЛИ "ми" чи "наш".
 Стиль: розмовний, живий, з емодзі, коротко і корисно — як друг розповідає другу, без зайвого пафосу.
 Тематика: ChatGPT, Claude, Gemini, Grok, Midjourney, Perplexity, Make, Zapier, Notion AI та інші AI-інструменти — продуктивність, автоматизація, лайфхаки, реальні кейси."""
 
@@ -85,6 +86,7 @@ def build_post_prompt(topic: str, style: str = None, previous: str = None) -> st
         f"Тема посту: {topic}.{style_hint}{regen_hint}\n\n"
         "Правила:\n"
         "- Довжина: 200–300 слів\n"
+        "- Від першої особи: «я», «мій», «я спробував» — НІКОЛИ «ми» чи «наш»\n"
         "- Структура: чіпляючий гачок → суть → практична порада → заклик або питання\n"
         "- 3–5 емодзі органічно\n"
         "- 3–5 хештегів наприкінці: #ailife_ua + тематичні\n"
