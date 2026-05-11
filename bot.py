@@ -1,5 +1,6 @@
 import os
 import sys
+import re
 import html
 import json
 import random
@@ -73,6 +74,8 @@ DAYS_UA = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
 def sanitize_post(text: str) -> str:
     escaped = html.escape(text)
     escaped = escaped.replace("&lt;b&gt;", "<b>").replace("&lt;/b&gt;", "</b>")
+    # Convert markdown **bold** to HTML <b>bold</b>
+    escaped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', escaped, flags=re.DOTALL)
     return escaped
 
 
@@ -453,11 +456,11 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
             f"Згенеруй 7 окремих постів для Telegram-каналу @ailife_ua.\n"
             f"Теми по днях:\n{topics_list}\n\n"
             f"Правила:\n"
-            f"- Кожен пост: 200-250 слів, розмовний стиль, як друг розповідає другу\n"
+            f"- Кожен пост: 200-250 слів, розмовний стиль від першої особи (я, мій, я спробував)\n"
             f"- 3-5 емодзі органічно, хештеги #ailife_ua наприкінці\n"
-            f"- <b>жирний</b> для заголовка і ключових думок\n"
+            f"- Жирний текст — ТІЛЬКИ через HTML теги <b>текст</b>, НЕ через зірочки **текст**\n"
+            f"- Мова ВИКЛЮЧНО українська — жодного англійського, французького чи іншого іноземного слова всередині тексту\n"
             f"- Формат відповіді — рівно 7 блоків, розділених лінією '---'\n"
-            f"Мова: українська."
         )
 
         try:
