@@ -70,6 +70,13 @@ TOOL_CAPABILITIES = {
     "heygen": "HeyGen: створює відео з AI-аватаром який говорить — достатньо тексту; переводить відео на інші мови зі збереженням губ (lip sync)",
 }
 
+OWNER_ID = 1538197357
+
+def is_owner(update: Update) -> bool:
+    user = update.effective_user
+    return user is not None and user.id == OWNER_ID
+
+
 POST_STYLES = {
     "tip": "практичний лайфхак або порада",
     "tool": "огляд AI-інструменту",
@@ -370,6 +377,8 @@ COMMANDS_TEXT = (
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     text = (
         "👋 Привіт! Я генерую пости для @ailife_ua — з текстом і зображенням.\n\n"
         + COMMANDS_TEXT
@@ -378,6 +387,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     text = (
         COMMANDS_TEXT
         + "\n\n<b>Стилі постів</b> (обираєш у /generate):\n"
@@ -392,6 +403,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def testpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     await update.message.reply_text("🧪 Тестую генерацію зображення...")
     test_prompt = "minimalist dark tech illustration, glowing neon UI elements, flat design, no people, AI technology, cinematic lighting, high quality digital art"
     image_bytes = await generate_image(test_prompt)
@@ -402,6 +415,8 @@ async def testpost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     queue = load_queue()
     pending = [item for item in queue if not item["posted"]]
 
@@ -417,6 +432,8 @@ async def queue_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     sample = random.sample(SUGGESTED_TOPICS, 4)
     style_keyboard = [
         [InlineKeyboardButton("🔧 Лайфхак", callback_data="style:tip"),
@@ -434,6 +451,8 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     query = update.callback_query
     await query.answer()
     style = query.data.split(":")[1]
@@ -446,6 +465,8 @@ async def style_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     thinking_msg = await update.message.reply_text("⏳ Генерую 7 тем на тиждень...")
 
     history = load_history()
@@ -494,6 +515,8 @@ async def week_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     query = update.callback_query
     await query.answer()
 
@@ -601,6 +624,8 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     query = update.callback_query
     await query.answer()
 
@@ -632,6 +657,8 @@ async def schedule_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     query = update.callback_query
     await query.answer()
 
@@ -658,6 +685,8 @@ async def week_back_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     topic = update.message.text.strip()
     style = context.user_data.pop("style", None)
     prompt = build_post_prompt(topic, style=style)
@@ -700,6 +729,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_owner(update):
+        return
     query = update.callback_query
     await query.answer()
 
