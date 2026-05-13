@@ -205,6 +205,19 @@ async def call_groq(prompt: str, status_msg=None, retries: int = 3) -> str:
     raise Exception("Groq перевантажений — спробуй за хвилину 🙏")
 
 
+async def proofread_post(text: str) -> str:
+    prompt = (
+        "Перевір і виправ текст посту. Виправ орфографічні помилки, опечатки, синтаксичні та логічні помилки.\n"
+        "Збережи без змін: стиль, структуру, HTML теги (<b></b>), емодзі, хештеги.\n"
+        "Поверни ТІЛЬКИ виправлений текст — без пояснень і коментарів.\n\n"
+        f"Текст:\n{text}"
+    )
+    try:
+        return (await call_groq(prompt)).strip()
+    except Exception:
+        return text
+
+
 # ── Image generation ──────────────────────────────────────────────────────────
 
 async def generate_image_grok(prompt: str) -> bytes | None:
@@ -270,7 +283,8 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
     for item in queue:
         if item["date"] == today and not item["posted"]:
             try:
-                post_text = format_channel_post(item.get("title", ""), item["text"])
+                corrected = await proofread_post(item["text"])
+                post_text = format_channel_post(item.get("title", ""), corrected)
                 image_prompt = item.get("image_prompt", "")
 
                 if not image_prompt:
@@ -521,7 +535,8 @@ async def week_post_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
         raw = await call_groq(prompt, status_msg=query.message)
         post = parse_post_json(raw)
 
-        post_text = post.get("text", raw)
+        await query.edit_message_text("✍️ Перевіряю текст...")
+        post_text = await proofread_post(post.get("text", raw))
         post_title = post.get("title", "")
         image_prompt = post.get("image_prompt", "")
 
@@ -620,11 +635,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raw = await call_groq(prompt, status_msg=thinking_msg)
         post = parse_post_json(raw)
 
+        await thinking_msg.edit_text("✍️ Перевіряю текст...")
+        post_text = await proofread_post(post.get("text", raw))
+
         context.user_data["last_topic"] = topic
-        context.user_data["last_post"] = post.get("text", raw)
+        context.user_data["last_post"] = post_text
         context.user_data["last_title"] = post.get("title", "")
 
-        post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
+        post_msg = format_channel_post(post.get("title", ""), post_text)
         image_prompt = post.get("image_prompt", "")
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
@@ -670,10 +688,13 @@ async def regen_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prompt = build_post_prompt(topic, previous=previous_post)
         raw = await call_groq(prompt)
         post = parse_post_json(raw)
-        context.user_data["last_post"] = post.get("text", raw)
+
+        await query.edit_message_text("✍️ Перевіряю текст...")
+        post_text = await proofread_post(post.get("text", raw))
+        context.user_data["last_post"] = post_text
         context.user_data["last_title"] = post.get("title", "")
 
-        post_msg = format_channel_post(post.get("title", ""), post.get("text", raw))
+        post_msg = format_channel_post(post.get("title", ""), post_text)
         image_prompt = post.get("image_prompt", "")
         keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton("🔄 Ще варіант", callback_data="regen"),
