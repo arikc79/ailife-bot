@@ -77,6 +77,10 @@ def is_owner(update: Update) -> bool:
     return user is not None and user.id == OWNER_ID
 
 
+AFFILIATE_KEYBOARD = InlineKeyboardMarkup([[
+    InlineKeyboardButton("🔗 Спробуй безкоштовно", url="https://t.me/nanobanana_gidbot?start=_tgr_FD3O1dQyZDhi")
+]])
+
 POST_STYLES = {
     "tip": "практичний лайфхак або порада",
     "tool": "огляд AI-інструменту",
@@ -340,16 +344,19 @@ async def post_daily_job(context: ContextTypes.DEFAULT_TYPE):
                     if len(post_text) <= 1024:
                         await context.bot.send_photo(
                             chat_id=CHANNEL_ID, photo=image_bytes,
-                            caption=post_text, parse_mode="HTML"
+                            caption=post_text, parse_mode="HTML",
+                            reply_markup=AFFILIATE_KEYBOARD
                         )
                     else:
                         await context.bot.send_photo(chat_id=CHANNEL_ID, photo=image_bytes)
                         await context.bot.send_message(
-                            chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML"
+                            chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML",
+                            reply_markup=AFFILIATE_KEYBOARD
                         )
                 else:
                     await context.bot.send_message(
-                        chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML"
+                        chat_id=CHANNEL_ID, text=post_text, parse_mode="HTML",
+                        reply_markup=AFFILIATE_KEYBOARD
                     )
 
                 item["posted"] = True
